@@ -25,20 +25,51 @@ nsslib_name()
 
 setup_path()
 {
-    for jvm in default-java \
-               java-7-openjdk-$arch java-7-openjdk \
+    for jvm in java-7-openjdk-$arch java-7-openjdk \
                oracle-java7-jre-$arch oracle-java7-server-jre-$arch oracle-java7-jdk-$arch \
                java-8-openjdk-$arch java-8-openjdk \
                oracle-java8-jre-$arch oracle-java8-server-jre-$arch oracle-java8-jdk-$arch \
                java-9-openjdk-$arch java-9-openjdk \
                oracle-java9-jre-$arch oracle-java9-server-jre-$arch oracle-java9-jdk-$arch \
-               java-11-openjdk-$arch java-11-openjdk; do
-    if [ -x /usr/lib/jvm/$jvm/bin/java ]; then
-        break
+               java-10-openjdk-$arch java-10-openjdk \
+               oracle-java10-jre-$arch oracle-java10-server-jre-$arch oracle-java10-jdk-$arch \
+               java-11-openjdk-$arch java-11-openjdk \
+               oracle-java11-jre-$arch oracle-java11-server-jre-$arch oracle-java11-jdk-$arch; do
+        if [ -x /usr/lib/jvm/$jvm/bin/java ]; then
+            export JAVA_HOME=/usr/lib/jvm/$jvm
+            PATH=$JAVA_HOME/bin:$PATH
+            break
         fi
     done
-    export JAVA_HOME=/usr/lib/jvm/$jvm
-    PATH=$JAVA_HOME/bin:$PATH
+}
+
+check_proc()
+{
+    if ! mountpoint -q /proc; then
+        echo >&2 "the keytool command requires a mounted proc fs (/proc)."
+        exit 1
+    fi
+}
+
+convert_pkcs12_keystore_to_jks()
+{
+    if ! keytool -importkeystore \
+                 -srckeystore /etc/ssl/certs/java/cacerts \
+                 -destkeystore /etc/ssl/certs/java/cacerts.dpkg-new \
+                 -srcstoretype PKCS12 \
+                 -deststoretype JKS \
+                 -srcstorepass "$storepass" \
+                 -deststorepass "$storepass" \
+                 -noprompt; then
+        echo "failed to convert PKCS12 keystore to JKS" >&2
+        exit 1
+    fi
+
+    # only update if /etc/default/cacerts allows
+    if [ "$cacerts_updates" = "yes" ]; then
+        mv -f /etc/ssl/certs/java/cacerts /etc/ssl/certs/java/cacerts.dpkg-old
+        mv -f /etc/ssl/certs/java/cacerts.dpkg-new /etc/ssl/certs/java/cacerts
+    fi
 }
 
 first_install()
@@ -89,14 +120,19 @@ case "$1" in
                 cp -f /etc/ssl/certs/java/cacerts /etc/ssl/certs/java/cacerts.dpkg-old
             fi
         fi
-        if [ -z "$2" -o -n "$FIXOLD" ]; then
-            setup_path
 
-            if ! mountpoint -q /proc; then
-                echo >&2 "the keytool command requires a mounted proc fs (/proc)."
-                exit 1
+        setup_path
+
+        if dpkg --compare-versions "$2" lt "20180516"; then
+            if [ -e /etc/ssl/certs/java/cacerts \
+                 -a "$(head -c4 /etc/ssl/certs/java/cacerts)" != "$(echo -en '\xfe\xed\xfe\xed')" ]; then
+                check_proc
+                convert_pkcs12_keystore_to_jks
             fi
+        fi
 
+        if [ -z "$2" -o -n "$FIXOLD" ]; then
+            check_proc
             trap do_cleanup EXIT
             first_install
         fi
